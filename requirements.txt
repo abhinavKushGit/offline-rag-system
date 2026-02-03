@@ -1,0 +1,7 @@
+numpy
+pyyaml
+pypdf
+sentence-transformers
+torch
+transformers
+faiss-cpu

@@ -1,0 +1,13 @@
+llm:
+  mode: offline        # offline | api
+  temperature: 0.2
+  max_tokens: 160
+
+
+retrieval:
+  top_k: 5
+
+chunking:
+  type: token
+  max_tokens: 200
+  overlap: 30
