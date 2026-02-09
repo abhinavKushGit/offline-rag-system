@@ -1,55 +1,54 @@
-from typing import List
+from typing import List, Dict
 from pathlib import Path
 from pypdf import PdfReader
 import re
 
 
 class PDFLoader:
-
     def __init__(self, pdf_dir: str):
         self.pdf_dir = Path(pdf_dir)
 
-    def load(self) -> List[str]:
+    def load(self) -> List[Dict]:
         documents = []
 
         for pdf_path in self.pdf_dir.glob("*.pdf"):
-            text = self._extract_text(pdf_path)
-            if text.strip():
-                documents.append(text)
+            sections = self._extract_sections(pdf_path)
+            documents.extend(sections)
 
         return documents
 
-    def _extract_text(self, pdf_path: Path) -> str:
+    def _extract_sections(self, pdf_path: Path) -> List[Dict]:
         reader = PdfReader(pdf_path)
-        pages_text = []
 
+        raw_text = []
         for page in reader.pages:
-            page_text = page.extract_text()
-            if not page_text:
+            text = page.extract_text()
+            if text:
+                raw_text.append(text)
+
+        full_text = "\n".join(raw_text)
+
+        heading_pattern = re.compile(
+            r"(Course Objectives|Course Learning Outcomes|Pre-Requisites|Course Contents|Course Curriculum|Course Description)",
+            re.IGNORECASE
+        )
+
+        splits = heading_pattern.split(full_text)
+
+        sections = []
+        current_heading = "General"
+
+        for part in splits:
+            part = part.strip()
+            if not part:
                 continue
 
-            page_text = self._normalize_sections(page_text)
-            pages_text.append(page_text)
+            if heading_pattern.fullmatch(part):
+                current_heading = part
+            else:
+                sections.append({
+                    "section": current_heading,
+                    "text": part
+                })
 
-        return "\n".join(pages_text)
-
-    def _normalize_sections(self, text: str) -> str:
-        
-        headings = [
-            "Course Objectives",
-            "Course Learning Outcomes",
-            "Course Contents",
-            "Course Curriculum",
-            "Pedagogy for Course Delivery",
-            "Course Description",
-        ]
-
-        for h in headings:
-            text = re.sub(
-                rf"\s*{h}\s*",
-                f"\n\n{h}\n\n",
-                text,
-                flags=re.IGNORECASE
-            )
-
-        return text
+        return sections

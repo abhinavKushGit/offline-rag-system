@@ -38,7 +38,9 @@ class RAGPipeline:
             self.chunker = FixedChunker(
                 chunk_cfg["chunk_size"],
                 chunk_cfg["overlap"],
+                tokenizer_name=self.models["embedding_model"],
             )
+
 
         # ----------------------------
         # Initialize embedder
@@ -66,32 +68,69 @@ class RAGPipeline:
             self.models["offline_llm"]["model_name"]
         )
 
-    def ingest(self, documents: list[str]):
+    # ============================================================
+    # INGESTION (TEXT + PDF SAFE, SECTION-AWARE INTERNALLY)
+    # ============================================================
+    def ingest(self, documents):
         """
-        Ingest a list of raw text documents into the vector store.
+        Accepts BOTH:
+        - List[str]            (plain text documents)
+        - List[dict]           (section-aware PDF documents)
+
+        Internally normalizes everything to:
+        {
+            "section": "...",
+            "text": "..."
+        }
         """
         all_chunks = []
+        metadata = []
 
         for doc in documents:
-            chunks = self.chunker.chunk(doc)
-            all_chunks.extend(chunks)
+            # ----------------------------
+            # Normalize input format
+            # ----------------------------
+            if isinstance(doc, dict):
+                section = doc.get("section", "General")
+                text = doc["text"]
+            else:
+                # Backward compatibility for Phase-1 text RAG
+                section = "General"
+                text = doc
 
+            # ----------------------------
+            # Chunking (section-safe)
+            # ----------------------------
+            chunks = self.chunker.chunk(text)
+
+            for chunk in chunks:
+                all_chunks.append(chunk)
+                metadata.append({
+                    "text": chunk,
+                    "section": section
+                })
+
+        # ----------------------------
+        # Embedding + indexing
+        # ----------------------------
         embeddings = self.embedder.embed(all_chunks)
 
         if self.vectorstore is None:
             self.vectorstore = FAISSStore(embeddings.shape[1])
 
-        metadata = [{"text": chunk} for chunk in all_chunks]
         self.vectorstore.add(embeddings, metadata)
 
+    # ============================================================
+    # QUERY (PROMPT-AWARE + SOFT SECTION BIAS)
+    # ============================================================
     def query(self, question: str):
         """
         Prompt-aware RAG query:
         - retrieve
-        - filter junk
+        - soft section bias (NO filtering)
+        - remove junk
         - prioritize dense chunks
-        - build prompt incrementally
-        - truncate safely instead of dropping
+        - token-safe context assembly
         """
         # ----------------------------
         # Retrieval
@@ -103,6 +142,31 @@ class RAGPipeline:
         )
 
         results = retriever.retrieve(question)
+
+        # ----------------------------
+        # SOFT SECTION BIAS (SAFE & OPTIONAL)
+        # ----------------------------
+        q = question.lower()
+
+        if "objective" in q:
+            results = sorted(
+                results,
+                key=lambda r: r.get("section", "").lower() != "course objectives"
+            )
+        elif "outcome" in q:
+            results = sorted(
+                results,
+                key=lambda r: r.get("section", "").lower() != "course learning outcomes"
+            )
+        elif "prerequisite" in q:
+            results = sorted(
+                results,
+                key=lambda r: r.get("section", "").lower() != "pre-requisites"
+            )
+
+        # ----------------------------
+        # Extract contexts
+        # ----------------------------
         contexts = [r["text"] for r in results]
 
         # ----------------------------
@@ -119,14 +183,13 @@ class RAGPipeline:
         # PROMPT-AWARE TOKEN BUDGETING
         # ----------------------------
         safe_contexts = []
-        TOKEN_LIMIT = 450  # budget for FULL prompt
+        TOKEN_LIMIT = 450  # total prompt budget
 
         for ctx in contexts:
             test_prompt = build_prompt(safe_contexts + [ctx], question)
             token_len = len(self.tokenizer.encode(test_prompt))
 
             if token_len > TOKEN_LIMIT:
-                # 🔑 SAFETY TRUNCATION (NOT DROP)
                 used_tokens = len(
                     self.tokenizer.encode(
                         build_prompt(safe_contexts, question)
@@ -139,10 +202,11 @@ class RAGPipeline:
                         self.tokenizer.encode(ctx)[:available]
                     )
                     safe_contexts.append(truncated)
-
                 break
 
-            safe_contexts.append(ctx)
+            safe_contexts.append(
+                f"[CONTEXT CHUNK {len(safe_contexts)+1}]\n{ctx}"
+            )
 
         # ----------------------------
         # Final prompt + generation

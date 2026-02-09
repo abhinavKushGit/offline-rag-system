@@ -5,7 +5,7 @@ llm:
 
 
 retrieval:
-  top_k: 5
+  top_k: 6
 
 chunking:
   type: token
