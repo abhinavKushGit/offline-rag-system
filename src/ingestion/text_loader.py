@@ -1,5 +1,8 @@
+# src/ingestion/text_loader.py
+
 from pathlib import Path
 from typing import List
+from src.schema import Document
 
 
 class TextLoader:
@@ -7,7 +10,7 @@ class TextLoader:
     def __init__(self, text_dir: str):
         self.text_dir = Path(text_dir)
 
-    def load(self) -> List[str]:
+    def load(self) -> List[Document]:
         documents = []
 
         for txt_path in self.text_dir.glob("*.txt"):
@@ -15,7 +18,12 @@ class TextLoader:
                 text = f.read()
                 cleaned = self._clean_text(text)
                 if cleaned.strip():
-                    documents.append(cleaned)
+                    documents.append(Document(
+                        text=cleaned,
+                        source=str(txt_path),
+                        modality="text",
+                        section="General",
+                    ))
 
         return documents
 

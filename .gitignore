@@ -13,3 +13,5 @@ notebooks/
 
 .DS_Store/
 .vscode/
+models/
+data/

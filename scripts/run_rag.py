@@ -50,7 +50,7 @@ def main():
     # Ingest into vector store
     # ----------------------------
     print("[INFO] Ingesting documents...")
-    rag.ingest(documents)
+    rag.ingest(documents, source_dir=path)
     print("[INFO] Ingestion complete.")
 
     # ----------------------------
@@ -70,3 +70,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

@@ -1,13 +1,16 @@
 llm:
-  mode: offline        # offline | api
+  mode: offline           # offline | api
   temperature: 0.2
-  max_tokens: 160
-
+  max_new_tokens: 512     # output token limit (was max_tokens: 160)
 
 retrieval:
   top_k: 6
 
 chunking:
   type: token
-  max_tokens: 200
-  overlap: 30
+  max_tokens: 300         # slightly larger chunks (was 200)
+  overlap: 50             # was 30
+
+token_budget:
+  total: 3500         # prompt context limit for Phi-3/Mistral
+                          # set to 450 if falling back to flan-t5

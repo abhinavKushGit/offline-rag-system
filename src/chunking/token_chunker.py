@@ -1,6 +1,6 @@
 from typing import List
 from transformers import AutoTokenizer
-
+import re
 
 class TokenChunker:
 
@@ -15,7 +15,8 @@ class TokenChunker:
         self.overlap = overlap
 
     def chunk(self, text: str) -> List[str]:
-        paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+        paragraphs = re.split(r'(?<=[.!?])\s+', text)
+        paragraphs = [p.strip() for p in paragraphs if p.strip()]
         chunks = []
 
         current_tokens = []

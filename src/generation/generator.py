@@ -1,19 +1,54 @@
-import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForSeq2SeqLM,
-    AutoModelForCausalLM
-)
+# src/generation/generator.py
+
+from pathlib import Path
 
 
 class Generator:
-    def __init__(self, model_name: str, temperature: float, max_tokens: int):
-        self.model_name = model_name
-        self.temperature = temperature
-        self.max_new_tokens = max_tokens  # 🔑 output-only limit
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.tokenizer.model_max_length = 512  # 🔒 hard safety
+    def __init__(self, model_config: dict, temperature: float, max_new_tokens: int):
+        self.temperature = temperature
+        self.max_new_tokens = max_new_tokens
+        self.backend = model_config.get("backend", "huggingface")
+
+        if self.backend == "llamacpp":
+            self._init_llamacpp(model_config)
+        else:
+            self._init_huggingface(model_config.get("model_name", "google/flan-t5-base"))
+
+    # ------------------------------------------------------------------
+    # INIT
+    # ------------------------------------------------------------------
+
+    def _init_llamacpp(self, model_config: dict):
+        from llama_cpp import Llama
+
+        model_path = model_config.get("model_path", "")
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"\n[ERROR] GGUF model not found at: {model_path}\n"
+                f"Download Phi-3-mini-4k-instruct-q4.gguf from HuggingFace\n"
+                f"and place it at: {model_path}\n"
+                f"Or switch models.yaml backend to 'huggingface' to use flan-t5."
+            )
+
+        self.llm = Llama(
+            model_path=model_path,
+            n_ctx=model_config.get("n_ctx", 4096),
+            n_threads=model_config.get("n_threads", 4),
+            verbose=False,
+        )
+        print(f"[INFO] Loaded GGUF model: {model_path}")
+
+    def _init_huggingface(self, model_name: str):
+        import torch
+        from transformers import (
+            AutoTokenizer,
+            AutoModelForSeq2SeqLM,
+            AutoModelForCausalLM,
+        )
+
+        self.hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.hf_tokenizer.model_max_length = 512
 
         if "t5" in model_name.lower():
             self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
@@ -23,20 +58,55 @@ class Generator:
             self.is_seq2seq = False
 
         self.model.eval()
+        print(f"[INFO] Loaded HuggingFace model: {model_name}")
+
+    # ------------------------------------------------------------------
+    # GENERATE
+    # ------------------------------------------------------------------
 
     def generate(self, prompt: str) -> str:
-        inputs = self.tokenizer(
+        if self.backend == "llamacpp":
+            return self._generate_llamacpp(prompt)
+        else:
+            return self._generate_huggingface(prompt)
+
+    def _generate_llamacpp(self, prompt: str) -> str:
+        # Phi-3 requires this exact chat format to produce output
+        formatted = (
+            f"<|system|>\n"
+            f"You are a helpful assistant. Answer ONLY using the context provided. "
+            f"If the answer is not in the context, say 'I don't know'.\n"
+            f"<|end|>\n"
+            f"<|user|>\n"
+            f"{prompt}\n"
+            f"<|end|>\n"
+            f"<|assistant|>\n"
+        )
+
+        response = self.llm(
+            formatted,
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+            stop=["<|end|>", "<|user|>", "<|system|>"],
+            echo=False,
+        )
+        return response["choices"][0]["text"].strip()
+
+    def _generate_huggingface(self, prompt: str) -> str:
+        import torch
+
+        inputs = self.hf_tokenizer(
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=512
+            max_length=512,
         )
 
         with torch.no_grad():
             if self.is_seq2seq:
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=self.max_new_tokens
+                    max_new_tokens=self.max_new_tokens,
                 )
             else:
                 outputs = self.model.generate(
@@ -44,10 +114,7 @@ class Generator:
                     max_new_tokens=self.max_new_tokens,
                     temperature=self.temperature,
                     do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id
+                    pad_token_id=self.hf_tokenizer.eos_token_id,
                 )
 
-        return self.tokenizer.decode(
-            outputs[0],
-            skip_special_tokens=True
-        )
+        return self.hf_tokenizer.decode(outputs[0], skip_special_tokens=True)
