@@ -35,6 +35,7 @@ class Generator:
             model_path=model_path,
             n_ctx=model_config.get("n_ctx", 4096),
             n_threads=model_config.get("n_threads", 4),
+            n_gpu_layers=model_config.get("n_gpu_layers", 32), 
             verbose=False,
         )
         print(f"[INFO] Loaded GGUF model: {model_path}")

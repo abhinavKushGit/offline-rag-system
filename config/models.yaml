@@ -6,3 +6,4 @@ offline_llm:
   model_name: google/flan-t5-base               # this will be used now
   n_ctx: 4096
   n_threads: 4
+  n_gpu_layers: 20
