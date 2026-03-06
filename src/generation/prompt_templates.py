@@ -1,18 +1,15 @@
 def build_prompt(context_chunks: list[str], query: str) -> str:
     context = "\n\n".join(context_chunks)
 
-    prompt = f"""
-You are a helpful assistant.
-
-Answer the question ONLY using the context below.
-If the answer is not present in the context, say "I don't know".
-
+    prompt = f"""<|system|>
+You are a helpful assistant. Answer the question using ONLY the context provided. 
+If the answer is not in the context, say "I don't know."
+Do not repeat yourself. Give one clear, concise answer and stop.<|end|>
+<|user|>
 Context:
 {context}
 
-Question:
-{query}
-
-Answer:
+Question: {query}<|end|>
+<|assistant|>
 """
-    return prompt.strip()
+    return prompt

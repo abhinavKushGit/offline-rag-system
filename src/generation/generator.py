@@ -1,6 +1,7 @@
 # src/generation/generator.py
 
 from pathlib import Path
+from urllib import response
 
 
 class Generator:
@@ -72,23 +73,12 @@ class Generator:
             return self._generate_huggingface(prompt)
 
     def _generate_llamacpp(self, prompt: str) -> str:
-        # Phi-3 requires this exact chat format to produce output
-        formatted = (
-            f"<|system|>\n"
-            f"You are a helpful assistant. Answer ONLY using the context provided. "
-            f"If the answer is not in the context, say 'I don't know'.\n"
-            f"<|end|>\n"
-            f"<|user|>\n"
-            f"{prompt}\n"
-            f"<|end|>\n"
-            f"<|assistant|>\n"
-        )
-
         response = self.llm(
-            formatted,
+            prompt,
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
-            stop=["<|end|>", "<|user|>", "<|system|>"],
+            repeat_penalty=1.1,
+            stop=["<|end|>", "<|user|>", "<|system|>", "\nQuestion:", "\nContext:"],
             echo=False,
         )
         return response["choices"][0]["text"].strip()

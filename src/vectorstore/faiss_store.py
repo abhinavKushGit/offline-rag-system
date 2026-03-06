@@ -13,7 +13,7 @@ class FAISSStore:
         self.index.add(vectors)
         self.metadata.extend(metadatas)
 
-    def search(self, query_vector: np.ndarray, k: int, threshold: float = 1.2) -> list[dict]:
+    def search(self, query_vector: np.ndarray, k: int, threshold: float = 2.0) -> list[dict]:
         distances, indices = self.index.search(query_vector, k)
 
         results = []

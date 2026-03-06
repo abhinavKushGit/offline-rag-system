@@ -7,68 +7,70 @@ sys.path.append(str(PROJECT_ROOT))
 from src.rag_pipeline import RAGPipeline
 from src.ingestion.text_loader import TextLoader
 from src.ingestion.pdf_loader import PDFLoader
+from src.ingestion.image_loader import ImageLoader
+from src.ingestion.audio_transcriber import AudioTranscriber
+from src.ingestion.video_processor import VideoProcessor
 
 
 def main():
-    print("=== RAG SYSTEM ===")
+    print("=== MULTIMODAL RAG SYSTEM ===")
 
-    source = input("Choose source (text/pdf): ").strip().lower()
-    if source not in {"text", "pdf"}:
-        print("❌ Invalid source. Choose 'text' or 'pdf'.")
+    print("Choose source:")
+    print("  1. text")
+    print("  2. pdf")
+    print("  3. image")
+    print("  4. audio")
+    print("  5. video")
+    source = input("Source: ").strip().lower()
+
+    if source not in {"text", "pdf", "image", "audio", "video"}:
+        print("❌ Invalid source.")
         return
 
-    # ----------------------------
-    # Ask for directory path
-    # ----------------------------
     path = input("Enter directory path: ").strip()
     if not Path(path).exists():
         print("❌ Path does not exist.")
         return
 
-    # ----------------------------
-    # Initialize pipeline
-    # ----------------------------
     rag = RAGPipeline()
+    documents = []
 
-    # ----------------------------
-    # Load documents
-    # ----------------------------
     if source == "text":
-        loader = TextLoader(path)
-    else:
-        loader = PDFLoader(path)
+        documents = TextLoader(path).load()
 
-    documents = loader.load()
+    elif source == "pdf":
+        documents = PDFLoader(path).load()
+
+    elif source == "image":
+        documents = ImageLoader(path).load()
+
+    elif source == "audio":
+        transcriber = AudioTranscriber(
+            model_size="small", device="cuda"
+        )
+        documents = transcriber.transcribe(path)
+
+    elif source == "video":
+        processor = VideoProcessor(keyframe_interval=30, device="cuda")
+        transcript_docs, keyframe_docs = processor.process(path)
+        documents = transcript_docs + keyframe_docs
 
     if not documents:
         print("❌ No documents found.")
         return
 
-    print(f"[INFO] Loaded {len(documents)} sections")
-
-    # ----------------------------
-    # Ingest into vector store
-    # ----------------------------
-    print("[INFO] Ingesting documents...")
+    print(f"[INFO] Loaded {len(documents)} documents")
     rag.ingest(documents, source_dir=path)
-    print("[INFO] Ingestion complete.")
 
-    # ----------------------------
-    # Interactive query loop
-    # ----------------------------
     while True:
         query = input("\nAsk a question (or type 'exit'): ").strip()
         if query.lower() == "exit":
             print("Exiting RAG session.")
             break
-
         answer = rag.query(query)
-
         print("\n=== ANSWER ===")
         print(answer)
 
 
 if __name__ == "__main__":
     main()
-
-
