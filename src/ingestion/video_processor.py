@@ -12,7 +12,7 @@ SUPPORTED_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov"}
 class VideoProcessor:
     def __init__(self, keyframe_interval: int = 30, device: str = "cuda"):
         self.keyframe_interval = keyframe_interval
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device  # respect what was passed in
         self.transcriber = AudioTranscriber(model_size="small", device=self.device)
         self.image_embedder = ImageEmbedder(device=self.device)
 

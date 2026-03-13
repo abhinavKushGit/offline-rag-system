@@ -1,6 +1,5 @@
 import yaml
 from transformers import AutoTokenizer
-
 from src.schema import Document
 from src.chunking.token_chunker import TokenChunker
 from src.chunking.fixed_chunker import FixedChunker
@@ -38,20 +37,19 @@ class RAGPipeline:
                 tokenizer_name=self.models["embedding_model"],
             )
 
-        # Embedders
+        # Text embedder — always needed
         self.text_embedder = TextEmbedder(self.models["embedding_model"])
+
+        # Image embedder — lazy loaded only when images present
         self.image_embedder = None
 
         # Stores
         self.text_vectorstore = None
         self.image_retriever = None
 
-        # Generator
-        self.generator = Generator(
-            model_config=self.models["offline_llm"],
-            temperature=self.config["llm"]["temperature"],
-            max_new_tokens=self.config["llm"]["max_new_tokens"],
-        )
+        # Generator — lazy loaded only when query() is called
+        self.generator = None
+        self._model_config = self.models["offline_llm"]
 
         # Tokenizer for budget
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -70,7 +68,7 @@ class RAGPipeline:
         text_docs = [d for d in documents if d.modality in ("text", "pdf", "audio", "video")]
         image_docs = [d for d in documents if d.modality == "image"]
 
-        # --- TEXT/AUDIO/VIDEO TRANSCRIPTS ---
+        # --- TEXT / AUDIO / VIDEO TRANSCRIPTS ---
         if text_docs:
             if source_dir is not None:
                 source_hash = compute_dir_hash(source_dir)
@@ -112,39 +110,47 @@ class RAGPipeline:
         if image_docs:
             if self.image_embedder is None:
                 self.image_embedder = ImageEmbedder(
-                model_name=self.models["clip"]["model"],
-                pretrained=self.models["clip"]["pretrained"],
-                device=self.models["clip"]["device"]
+                    model_name=self.models["clip"]["model"],
+                    pretrained=self.models["clip"]["pretrained"],
+                    device=self.models["clip"]["device"]
+                )
+            self.image_retriever = ImageRetriever(
+                self.image_embedder,
+                index_dir="outputs/indexes/images"
             )
-        self.image_retriever = ImageRetriever(
-            self.image_embedder,
-            index_dir="outputs/indexes/images"
-        )
-        self.image_retriever.build_index(image_docs)
-        print(f"[INFO] Indexed {len(image_docs)} images.")
+            self.image_retriever.build_index(image_docs)
+            print(f"[INFO] Indexed {len(image_docs)} images.")
 
     # ==========================================================
     # QUERY
     # ==========================================================
 
     def query(self, question: str) -> str:
+        # Lazy load generator — only when actually needed
+        if self.generator is None:
+            self.generator = Generator(
+                model_config=self._model_config,
+                temperature=self.config["llm"]["temperature"],
+                max_new_tokens=self.config["llm"]["max_new_tokens"],
+            )
+
         if self.text_vectorstore is None and self.image_retriever is None:
             return "No documents have been ingested yet."
 
-        # Build unified retriever
+        # Build retrievers — only what exists
         text_retriever = TextRetriever(
             self.text_embedder,
             self.text_vectorstore,
             self.config["retrieval"]["top_k"],
-        ) if self.text_vectorstore else None
+        ) if self.text_vectorstore is not None else None
 
         retriever = UnifiedRetriever(text_retriever, self.image_retriever)
         results = retriever.retrieve(question)
-
+        
         if not results:
             return "I could not find relevant information in the documents."
 
-        # Section bias
+        # Section bias reranking
         q_words = set(question.lower().split())
         def section_bias(r):
             section_words = set(r.get("section", "").lower().split())
@@ -152,14 +158,14 @@ class RAGPipeline:
             return r.get("score", 1.0) - (overlap * 0.1)
         results = sorted(results, key=section_bias)
 
-        # Filter short
+        # Filter too-short chunks
         contexts = [r["text"] for r in results]
-        contexts = [c for c in contexts if len(c.split()) > 5]
+        contexts = [c for c in contexts if len(c.split()) > 2]
 
         if not contexts:
             return "The retrieved content was too sparse to answer the question."
 
-        # Token budget
+        # Token budget assembly
         TOKEN_LIMIT = self.config.get("token_budget", {}).get("total", 3500)
         safe_contexts = []
         for ctx in contexts:
