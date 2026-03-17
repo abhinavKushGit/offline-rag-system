@@ -17,3 +17,7 @@ whisper:
   model_size: small
   device: cuda
   language: en
+
+vlm:
+  model_id: Qwen/Qwen2-VL-2B-Instruct
+  max_new_tokens: 300

@@ -41,7 +41,11 @@ def main():
         documents = PDFLoader(path).load()
 
     elif source == "image":
-        documents = ImageLoader(path).load()
+        from src.ingestion.image_captioner import ImageCaptioner
+        captioner = ImageCaptioner()
+        documents = captioner.caption_dir(path)
+        captioner.unload()                  # VRAM freed before RAGPipeline()
+        print(f"[INFO] LLaVA unloaded, VRAM freed.")
 
     elif source == "audio":
         transcriber = AudioTranscriber(model_size="small", device="cuda")

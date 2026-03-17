@@ -68,7 +68,20 @@ class RAGPipeline:
         text_docs = [d for d in documents if d.modality in ("text", "pdf", "audio", "video")]
         image_docs = [d for d in documents if d.modality == "image"]
 
-        # --- TEXT / AUDIO / VIDEO TRANSCRIPTS ---
+        # Inject image captions into text pipeline as plain text docs
+        caption_docs = [
+            Document(
+                text=doc.text,
+                source=doc.source,
+                modality="image",
+                metadata={**doc.metadata, "is_caption": True},
+            )
+            for doc in image_docs
+            if doc.text and len(doc.text.strip()) > 5
+        ]
+        text_docs = text_docs + caption_docs
+
+        # --- TEXT / AUDIO / VIDEO TRANSCRIPTS + IMAGE CAPTIONS ---
         if text_docs:
             if source_dir is not None:
                 source_hash = compute_dir_hash(source_dir)
@@ -77,6 +90,19 @@ class RAGPipeline:
                     print(f"[INFO] Cache hit — loading text index.")
                     self.text_vectorstore = FAISSStore.load(index_path, meta_path)
                     print(f"[INFO] {len(self.text_vectorstore.metadata)} chunks loaded.")
+                    # still need to build image retriever even on cache hit
+                    if image_docs:
+                        if self.image_embedder is None:
+                            self.image_embedder = ImageEmbedder(
+                                model_name=self.models["clip"]["model"],
+                                pretrained=self.models["clip"]["pretrained"],
+                                device=self.models["clip"]["device"]
+                            )
+                        self.image_retriever = ImageRetriever(
+                            self.image_embedder,
+                            index_dir="outputs/indexes/images"
+                        )
+                        self.image_retriever.build_index(image_docs)
                     return
 
             chunks = self.chunker.chunk(text_docs)
@@ -120,7 +146,6 @@ class RAGPipeline:
             )
             self.image_retriever.build_index(image_docs)
             print(f"[INFO] Indexed {len(image_docs)} images.")
-
     # ==========================================================
     # QUERY
     # ==========================================================
@@ -146,6 +171,23 @@ class RAGPipeline:
 
         retriever = UnifiedRetriever(text_retriever, self.image_retriever)
         results = retriever.retrieve(question)
+
+        # Filename pre-filter — if query mentions a specific file, restrict results to it
+        import os
+        query_lower = question.lower()
+        all_sources = list({r["source"] for r in results})
+        matched_source = None
+        for src in all_sources:
+            fname = os.path.basename(src).lower()
+            fname_stem = os.path.splitext(fname)[0].lower()
+            if fname in query_lower or fname_stem in query_lower:
+                matched_source = src
+                break
+
+        if matched_source:
+            filtered = [r for r in results if r["source"] == matched_source]
+            if filtered:  # only apply filter if it returns something
+                results = filtered
         
         if not results:
             return "I could not find relevant information in the documents."
