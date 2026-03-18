@@ -1,32 +1,40 @@
 import cv2
 import subprocess
 import torch
+import gc
+import shutil
 from pathlib import Path
 from PIL import Image
 from src.schema import Document
 from src.ingestion.audio_transcriber import AudioTranscriber
-from src.embeddings.image_embedder import ImageEmbedder
+from src.retrieval.temporal_attention import TemporalAttention
 
 SUPPORTED_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov"}
 
-class VideoProcessor:
-    def __init__(self, keyframe_interval: int = 30, device: str = "cuda"):
-        self.keyframe_interval = keyframe_interval
-        self.device = device  # respect what was passed in
-        self.transcriber = AudioTranscriber(model_size="small", device=self.device)
-        self.image_embedder = ImageEmbedder(device=self.device)
 
-    def process(self, video_dir: str) -> tuple[list[Document], list[Document]]:
+class VideoProcessor:
+    def __init__(self, keyframe_interval: int = 2, device: str = "cuda"):
+        self.keyframe_interval = keyframe_interval
+        self.device = device
+        self.transcriber = AudioTranscriber(model_size="small", device=self.device)
+        self.temporal_attn = TemporalAttention(embed_dim=512, num_heads=8)
+        self.temporal_attn.eval()
+        # dedicated temp dir — never overlaps with data/audio/
+        self._audio_tmp = Path("outputs/video_audio_tmp")
+        self._audio_tmp.mkdir(parents=True, exist_ok=True)
+
+    def process(self, video_dir: str) -> tuple[list[Document], list[Image.Image], list[str]]:
         transcript_docs = []
-        keyframe_docs = []
+        keyframe_images = []
+        keyframe_sources = []
 
         for file in sorted(Path(video_dir).iterdir()):
             if file.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             print(f"[VideoProcessor] Processing {file.name}")
 
-            # Audio → transcript
-            audio_out = Path("data/audio") / f"{file.stem}_extracted.wav"
+            # extract audio to isolated tmp dir
+            audio_out = self._audio_tmp / f"{file.stem}_extracted.wav"
             self._extract_audio(file, audio_out)
             segments = self.transcriber.transcribe_file(str(audio_out))
             for doc in segments:
@@ -34,26 +42,20 @@ class VideoProcessor:
                 doc.modality = "video"
             transcript_docs.extend(segments)
 
-            # Keyframes
             frames = self._extract_keyframes(file)
             for timestamp, frame_img in frames:
-                doc = Document(
-                    text=f"Video frame from {file.name} at {timestamp:.1f}s",
-                    source=str(file),
-                    modality="video",
-                    timestamp=timestamp,
-                    metadata={"video_file": file.name, "frame_time": timestamp,
-                              "_pil_image": frame_img}
-                )
-                keyframe_docs.append(doc)
+                keyframe_images.append(frame_img)
+                keyframe_sources.append(f"{file.name}::frame_{timestamp:.1f}s")
 
-        print(f"[VideoProcessor] Transcripts: {len(transcript_docs)}, Keyframes: {len(keyframe_docs)}")
-        return transcript_docs, keyframe_docs
+        print(f"[VideoProcessor] Transcripts: {len(transcript_docs)}, "
+              f"Keyframes: {len(keyframe_images)}")
+        return transcript_docs, keyframe_images, keyframe_sources
 
     def _extract_audio(self, video_path: Path, out_path: Path):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(video_path), "-ac", "1", "-ar", "16000", str(out_path)],
+            ["ffmpeg", "-y", "-i", str(video_path),
+             "-ac", "1", "-ar", "16000", str(out_path)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
 
@@ -74,3 +76,22 @@ class VideoProcessor:
             frame_idx += 1
         cap.release()
         return frames
+
+    def apply_temporal_attention(self, vectors):
+        print(f"[VideoProcessor] Applying temporal attention over "
+              f"{vectors.shape[0]} frames...")
+        attended = self.temporal_attn.attend(vectors)
+        print(f"[VideoProcessor] Temporal attention applied.")
+        return attended
+
+    def unload(self):
+        print("[VideoProcessor] Unloading Whisper...")
+        del self.transcriber
+        self.transcriber = None
+        # clean up temp audio files after transcription done
+        if self._audio_tmp.exists():
+            shutil.rmtree(self._audio_tmp)
+            print(f"[VideoProcessor] Cleaned up temp audio files.")
+        gc.collect()
+        torch.cuda.empty_cache()
+        print("[VideoProcessor] Whisper unloaded.")

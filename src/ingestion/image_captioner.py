@@ -10,13 +10,24 @@ from src.schema import Document
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 CAPTION_PROMPT = """Describe this image in complete detail. Include:
-- Every visible object and its exact color
-- What people are doing, their appearance, clothing colors
-- Any text or writing visible anywhere in the image
+- First, state whether this image is in color or black and white / grayscale
+- Every visible object (if color: include exact colors; if black and white: describe tones only, do not guess colors)
+- What people are doing, their appearance and clothing
+- Any text or writing visible anywhere
 - The background, setting, and lighting conditions
 - Spatial relationships between objects
 - Any actions or events taking place
 Be specific and thorough."""
+
+VIDEO_FRAME_PROMPT = """This is a frame from a video. Describe what is happening in this video frame in complete detail. Include:
+- First, state whether this frame is in color or black and white / grayscale
+- Every visible object and animal (if color: include exact colors; if black and white: describe tones only)
+- What people or animals are doing, their appearance
+- Any text or writing visible anywhere in the frame
+- The background, setting, environment and lighting
+- Spatial relationships between subjects
+- Any actions, motion or events visible
+Describe this as a video scene, not a static image."""
 
 
 class ImageCaptioner:
@@ -42,7 +53,7 @@ class ImageCaptioner:
         self.processor = AutoProcessor.from_pretrained(
             self.model_id,
             min_pixels=256 * 28 * 28,
-            max_pixels=512 * 28 * 28,  # cap resolution to save VRAM
+            max_pixels=512 * 28 * 28,
         )
 
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -55,13 +66,13 @@ class ImageCaptioner:
         self.model.eval()
         print("[ImageCaptioner] Qwen2-VL loaded.")
 
-    def _caption_pil(self, image: Image.Image) -> str:
+    def _caption_pil_with_prompt(self, image: Image.Image, prompt: str) -> str:
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": CAPTION_PROMPT},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ]
@@ -94,11 +105,13 @@ class ImageCaptioner:
             generated, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0].strip()
 
-        # explicitly free input tensors and flush cache after each image
         del inputs, output_ids, generated, image_inputs
         torch.cuda.empty_cache()
 
         return caption
+
+    def _caption_pil(self, image: Image.Image) -> str:
+        return self._caption_pil_with_prompt(image, CAPTION_PROMPT)
 
     def caption_dir(self, image_dir: str) -> list[Document]:
         self._load()
@@ -140,7 +153,7 @@ class ImageCaptioner:
         docs = []
         for img, src in zip(pil_images, sources):
             print(f"[ImageCaptioner] Captioning frame: {src}")
-            caption = self._caption_pil(img)
+            caption = self._caption_pil_with_prompt(img, VIDEO_FRAME_PROMPT)
             docs.append(Document(
                 text=caption,
                 source=src,

@@ -13,26 +13,22 @@ class ImageRetriever:
         self.index = None
         self.documents = []
 
-    def build_index(self, documents: list[Document]):
+    def build_index(self, documents, apply_temporal_attention: bool = False,
+                temporal_attn=None):
         self.documents = documents
-
-        # If docs have PIL images in metadata (video keyframes) use those
-        # Otherwise use file paths (regular images from Phase 4a)
         pil_images = [doc.metadata.get("_pil_image") for doc in documents]
-
         if all(img is not None for img in pil_images):
-            print(f"[ImageRetriever] Encoding {len(pil_images)} PIL keyframes with CLIP...")
             vectors = self.embedder.encode_pil_images(pil_images)
         else:
-            image_paths = [doc.source for doc in documents]
-            print(f"[ImageRetriever] Encoding {len(image_paths)} images with CLIP...")
-            vectors = self.embedder.encode_images(image_paths)
+            vectors = self.embedder.encode_images([doc.source for doc in documents])
 
-        dim = vectors.shape[1]
-        self.index = faiss.IndexFlatIP(dim)
+        # apply temporal attention if this is a video keyframe sequence
+        if apply_temporal_attention and temporal_attn is not None:
+            vectors = temporal_attn.apply_temporal_attention(vectors)
+
+        self.index = faiss.IndexFlatIP(vectors.shape[1])
         self.index.add(vectors)
         self._save()
-        print(f"[ImageRetriever] Index built: {len(documents)} images, dim={dim}")
 
     def retrieve(self, query: str, top_k: int = 3) -> list[Document]:
         if self.index is None:

@@ -8,9 +8,7 @@ sys.path.append(str(PROJECT_ROOT))
 from src.rag_pipeline import RAGPipeline
 from src.ingestion.text_loader import TextLoader
 from src.ingestion.pdf_loader import PDFLoader
-from src.ingestion.image_loader import ImageLoader
 from src.ingestion.audio_transcriber import AudioTranscriber
-from src.ingestion.video_processor import VideoProcessor
 
 
 def main():
@@ -44,24 +42,34 @@ def main():
         from src.ingestion.image_captioner import ImageCaptioner
         captioner = ImageCaptioner()
         documents = captioner.caption_dir(path)
-        captioner.unload()                  # VRAM freed before RAGPipeline()
-        print(f"[INFO] LLaVA unloaded, VRAM freed.")
+        captioner.unload()
+        print("[INFO] Qwen2-VL unloaded, VRAM freed.")
 
     elif source == "audio":
         transcriber = AudioTranscriber(model_size="small", device="cuda")
         documents = transcriber.transcribe(path)
-        # Free VRAM before Phi-3 loads
         del transcriber
         torch.cuda.empty_cache()
         print("[INFO] Whisper unloaded, VRAM freed.")
 
     elif source == "video":
-        processor = VideoProcessor(keyframe_interval=30, device="cpu")
-        transcript_docs, keyframe_docs = processor.process(path)
+        from src.ingestion.video_processor import VideoProcessor
+        from src.ingestion.video_captioner import VideoCaptioner
+
+        # Step 1 — Whisper transcription on CPU to preserve VRAM
+        processor = VideoProcessor(keyframe_interval=2, device="cuda")
+        transcript_docs, keyframe_images, keyframe_sources = processor.process(path)
+        processor.unload()
+        print("[INFO] Whisper unloaded, VRAM freed.")
+
+        # Step 2 — Qwen2-VL keyframe captioning
+        captioner = VideoCaptioner()
+        keyframe_docs = captioner.caption_frames(keyframe_images, keyframe_sources)
+        captioner.unload()
+        print("[INFO] Qwen2-VL unloaded, VRAM freed.")
+
         documents = transcript_docs + keyframe_docs
-        del processor
         torch.cuda.empty_cache()
-        print("[INFO] VideoProcessor unloaded, VRAM freed.")
 
     if not documents:
         print("❌ No documents found.")
@@ -69,7 +77,7 @@ def main():
 
     print(f"[INFO] Loaded {len(documents)} documents")
 
-    rag = RAGPipeline()  # moved here — after transcription, VRAM is free
+    rag = RAGPipeline()
     rag.ingest(documents, source_dir=path)
 
     while True:

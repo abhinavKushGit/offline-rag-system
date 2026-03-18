@@ -64,9 +64,14 @@ class RAGPipeline:
     def ingest(self, documents: list[Document], source_dir: str = None):
         cache_dir = "outputs/indexes"
 
-        # Separate by modality
-        text_docs = [d for d in documents if d.modality in ("text", "pdf", "audio", "video")]
+        # video keyframe docs have _pil_image — route to image retriever
+        # video transcript docs have no _pil_image — route to text retriever
+        text_docs = [d for d in documents if d.modality in ("text", "pdf", "audio")]
+        text_docs += [d for d in documents if d.modality == "video"
+                    and "_pil_image" not in d.metadata]
         image_docs = [d for d in documents if d.modality == "image"]
+        image_docs += [d for d in documents if d.modality == "video"
+                    and "_pil_image" in d.metadata]
 
         # Inject image captions into text pipeline as plain text docs
         caption_docs = [
@@ -144,8 +149,29 @@ class RAGPipeline:
                 self.image_embedder,
                 index_dir="outputs/indexes/images"
             )
-            self.image_retriever.build_index(image_docs)
-            print(f"[INFO] Indexed {len(image_docs)} images.")
+
+            # check if these are video keyframes — apply temporal attention if so
+            is_video = any(d.modality == "video" for d in image_docs)
+            if is_video and len(image_docs) > 1:
+                from src.retrieval.temporal_attention import TemporalAttention
+                # create a temporary processor just for the attention call
+                class _AttnWrapper:
+                    def __init__(self):
+                        self.temporal_attn = TemporalAttention(512, 8)
+                        self.temporal_attn.eval()
+                    def apply_temporal_attention(self, v):
+                        return self.temporal_attn.attend(v)
+
+                self.image_retriever.build_index(
+                    image_docs,
+                    apply_temporal_attention=True,
+                    temporal_attn=_AttnWrapper()
+                )
+            else:
+                self.image_retriever.build_index(image_docs)
+
+            print(f"[INFO] Indexed {len(image_docs)} images"
+                f"{' with temporal attention' if is_video else ''}.")
     # ==========================================================
     # QUERY
     # ==========================================================
@@ -172,21 +198,28 @@ class RAGPipeline:
         retriever = UnifiedRetriever(text_retriever, self.image_retriever)
         results = retriever.retrieve(question)
 
-        # Filename pre-filter — if query mentions a specific file, restrict results to it
+        # Filename pre-filter — ONLY if user explicitly mentions a filename
+        # Falls back to full semantic retrieval if no filename found in query
         import os
         query_lower = question.lower()
-        all_sources = list({r["source"] for r in results})
         matched_source = None
-        for src in all_sources:
+
+        for r in results:
+            src = r.get("source", "")
             fname = os.path.basename(src).lower()
             fname_stem = os.path.splitext(fname)[0].lower()
+            # handle frame sources like "samplevid.mp4::frame_5.0s"
+            if "::" in fname:
+                fname = fname.split("::")[0]
+                fname_stem = os.path.splitext(fname)[0]
             if fname in query_lower or fname_stem in query_lower:
-                matched_source = src
+                matched_source = src.split("::")[0]
                 break
 
         if matched_source:
-            filtered = [r for r in results if r["source"] == matched_source]
-            if filtered:  # only apply filter if it returns something
+            filtered = [r for r in results
+                        if r.get("source", "").startswith(matched_source)]
+            if filtered:
                 results = filtered
         
         if not results:
