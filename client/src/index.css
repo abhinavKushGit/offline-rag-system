@@ -1,0 +1,21 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-zinc-950 text-zinc-100 font-sans antialiased;
+  }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { @apply bg-zinc-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-zinc-600 rounded-full; }
+}
+
+@layer utilities {
+  .streaming-cursor::after {
+    content: "▋";
+    @apply animate-pulse text-emerald-400 ml-0.5;
+  }
+}
