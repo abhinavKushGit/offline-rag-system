@@ -71,6 +71,25 @@ class Generator:
             return self._generate_llamacpp(prompt)
         else:
             return self._generate_huggingface(prompt)
+        
+    def generate_stream(self, prompt: str):
+        """
+        Yields string tokens one by one.
+        Uses llama-cpp-python's built-in stream=True support.
+        """
+        stream = self.llm(
+            prompt,
+            max_tokens=self.max_new_tokens,
+            temperature=0.2,
+            repeat_penalty=1.1,
+            echo=False,
+            stop=["<|end|>", "<|user|>", "<|system|>", "\nQuestion:", "\nContext:"],
+            stream=True,
+        )
+        for chunk in stream:
+            token = chunk["choices"][0]["text"]
+            if token:
+                yield token
 
     def _generate_llamacpp(self, prompt: str) -> str:
         response = self.llm(

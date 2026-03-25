@@ -1,3 +1,4 @@
+import os
 import yaml
 from transformers import AutoTokenizer
 from src.schema import Document
@@ -68,10 +69,10 @@ class RAGPipeline:
         # video transcript docs have no _pil_image — route to text retriever
         text_docs = [d for d in documents if d.modality in ("text", "pdf", "audio")]
         text_docs += [d for d in documents if d.modality == "video"
-                    and "_pil_image" not in d.metadata]
+                      and "_pil_image" not in d.metadata]
         image_docs = [d for d in documents if d.modality == "image"]
         image_docs += [d for d in documents if d.modality == "video"
-                    and "_pil_image" in d.metadata]
+                       and "_pil_image" in d.metadata]
 
         # Inject image captions into text pipeline as plain text docs
         caption_docs = [
@@ -154,11 +155,12 @@ class RAGPipeline:
             is_video = any(d.modality == "video" for d in image_docs)
             if is_video and len(image_docs) > 1:
                 from src.retrieval.temporal_attention import TemporalAttention
-                # create a temporary processor just for the attention call
+
                 class _AttnWrapper:
                     def __init__(self):
                         self.temporal_attn = TemporalAttention(512, 8)
                         self.temporal_attn.eval()
+
                     def apply_temporal_attention(self, v):
                         return self.temporal_attn.attend(v)
 
@@ -171,22 +173,21 @@ class RAGPipeline:
                 self.image_retriever.build_index(image_docs)
 
             print(f"[INFO] Indexed {len(image_docs)} images"
-                f"{' with temporal attention' if is_video else ''}.")
+                  f"{' with temporal attention' if is_video else ''}.")
+
     # ==========================================================
-    # QUERY
+    # SHARED RETRIEVAL — used by query() and query_stream()
     # ==========================================================
 
-    def query(self, question: str) -> str:
-        # Lazy load generator — only when actually needed
-        if self.generator is None:
-            self.generator = Generator(
-                model_config=self._model_config,
-                temperature=self.config["llm"]["temperature"],
-                max_new_tokens=self.config["llm"]["max_new_tokens"],
-            )
-
+    def _retrieve_context(self, question: str) -> tuple[list[str], list]:
+        """
+        Runs full retrieval + reranking + token-budget assembly.
+        Returns:
+            safe_contexts : list[str]  — budget-trimmed context chunks
+            results       : list[dict] — raw ranked retrieval results
+        """
         if self.text_vectorstore is None and self.image_retriever is None:
-            return "No documents have been ingested yet."
+            return [], []
 
         # Build retrievers — only what exists
         text_retriever = TextRetriever(
@@ -200,7 +201,6 @@ class RAGPipeline:
 
         # Filename pre-filter — ONLY if user explicitly mentions a filename
         # Falls back to full semantic retrieval if no filename found in query
-        import os
         query_lower = question.lower()
         matched_source = None
 
@@ -221,16 +221,18 @@ class RAGPipeline:
                         if r.get("source", "").startswith(matched_source)]
             if filtered:
                 results = filtered
-        
+
         if not results:
-            return "I could not find relevant information in the documents."
+            return [], []
 
         # Section bias reranking
         q_words = set(question.lower().split())
+
         def section_bias(r):
             section_words = set(r.get("section", "").lower().split())
             overlap = len(q_words & section_words)
             return r.get("score", 1.0) - (overlap * 0.1)
+
         results = sorted(results, key=section_bias)
 
         # Filter too-short chunks
@@ -238,7 +240,7 @@ class RAGPipeline:
         contexts = [c for c in contexts if len(c.split()) > 2]
 
         if not contexts:
-            return "The retrieved content was too sparse to answer the question."
+            return [], results
 
         # Token budget assembly
         TOKEN_LIMIT = self.config.get("token_budget", {}).get("total", 3500)
@@ -255,9 +257,61 @@ class RAGPipeline:
                     truncated = self.tokenizer.decode(
                         self.tokenizer.encode(ctx, add_special_tokens=False)[:available]
                     )
-                    safe_contexts.append(f"[CONTEXT CHUNK {len(safe_contexts)+1}]\n{truncated}")
+                    safe_contexts.append(f"[CONTEXT CHUNK {len(safe_contexts) + 1}]\n{truncated}")
                 break
-            safe_contexts.append(f"[CONTEXT CHUNK {len(safe_contexts)+1}]\n{ctx}")
+            safe_contexts.append(f"[CONTEXT CHUNK {len(safe_contexts) + 1}]\n{ctx}")
+
+        return safe_contexts, results
+
+    # ==========================================================
+    # QUERY — lazy loads generator, returns full string
+    # ==========================================================
+
+    def _ensure_generator(self):
+        """Lazy-load Phi-3 on first call. Safe to call multiple times."""
+        if self.generator is None:
+            self.generator = Generator(
+                model_config=self._model_config,
+                temperature=self.config["llm"]["temperature"],
+                max_new_tokens=self.config["llm"]["max_new_tokens"],
+            )
+
+    def query(self, question: str) -> str:
+        """Run a full RAG query and return the complete answer as a string."""
+        self._ensure_generator()
+
+        if self.text_vectorstore is None and self.image_retriever is None:
+            return "No documents have been ingested yet."
+
+        safe_contexts, results = self._retrieve_context(question)
+
+        if not safe_contexts:
+            if not results:
+                return "I could not find relevant information in the documents."
+            return "The retrieved content was too sparse to answer the question."
 
         prompt = build_prompt(safe_contexts, question)
         return self.generator.generate(prompt)
+
+    def query_stream(self, question: str):
+        """
+        Generator — yields string tokens one by one for SSE streaming.
+        Follows the same retrieval path as query().
+        """
+        self._ensure_generator()
+
+        if self.text_vectorstore is None and self.image_retriever is None:
+            yield "No documents have been ingested yet."
+            return
+
+        safe_contexts, results = self._retrieve_context(question)
+
+        if not safe_contexts:
+            if not results:
+                yield "I could not find relevant information in the documents."
+            else:
+                yield "The retrieved content was too sparse to answer the question."
+            return
+
+        prompt = build_prompt(safe_contexts, question)
+        yield from self.generator.generate_stream(prompt)

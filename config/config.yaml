@@ -4,7 +4,7 @@ llm:
   max_new_tokens: 512     # output token limit (was max_tokens: 160)
 
 retrieval:
-  top_k: 10
+  top_k: 4
 
 chunking:
   type: token
@@ -12,5 +12,5 @@ chunking:
   overlap: 50             # was 30
 
 token_budget:
-  total: 3500         # prompt context limit for Phi-3/Mistral
+  total: 2800         # prompt context limit for Phi-3/Mistral
                           # set to 450 if falling back to flan-t5
