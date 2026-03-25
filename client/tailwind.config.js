@@ -4,8 +4,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        mono: ["'JetBrains Mono'", "monospace"],
-        sans: ["'DM Sans'", "sans-serif"],
+        display: ["'Syne'", "sans-serif"],
+        mono:    ["'DM Mono'", "monospace"],
+        body:    ["'Literata'", "Georgia", "serif"],
       },
     },
   },

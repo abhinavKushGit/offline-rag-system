@@ -22,23 +22,31 @@ class AudioTranscriber:
         return docs
 
     def transcribe_file(self, file_path: str) -> list[Document]:
-        """Transcribe a single audio file"""
         file = Path(file_path)
-        docs = []
         print(f"[AudioTranscriber] Transcribing {file.name}...")
         result = self.model.transcribe(str(file), language=self.language, verbose=False)
-        for segment in result["segments"]:
-            doc = Document(
-                text=segment["text"].strip(),
+
+        segments = result["segments"]
+        docs = []
+        GROUP_SIZE = 8   # merge 8 Whisper segments into one Document
+
+        for i in range(0, len(segments), GROUP_SIZE):
+            group = segments[i : i + GROUP_SIZE]
+            combined_text = " ".join(s["text"].strip() for s in group)
+            start_time    = group[0]["start"]
+            end_time      = group[-1]["end"]
+
+            docs.append(Document(
+                text=combined_text,
                 source=str(file),
                 modality="audio",
-                timestamp=segment["start"],
+                timestamp=start_time,
                 metadata={
-                    "start_time": segment["start"],
-                    "end_time": segment["end"],
-                    "audio_file": file.name
+                    "start_time": start_time,
+                    "end_time":   end_time,
+                    "audio_file": file.name,
                 }
-            )
-            docs.append(doc)
-        print(f"[AudioTranscriber] {file.name} → {len(result['segments'])} segments")
+            ))
+
+        print(f"[AudioTranscriber] {file.name} → {len(segments)} segments → {len(docs)} grouped docs")
         return docs

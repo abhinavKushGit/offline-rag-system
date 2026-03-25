@@ -1,21 +1,56 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Mono:wght@400;500&family=Literata:ital,wght@0,300;0,400;1,300&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  * { box-sizing: border-box; }
   body {
-    @apply bg-zinc-950 text-zinc-100 font-sans antialiased;
+    @apply bg-zinc-950 text-zinc-300 antialiased;
+    font-family: 'Literata', Georgia, serif;
+    font-weight: 300;
   }
-  ::-webkit-scrollbar { width: 4px; }
-  ::-webkit-scrollbar-track { @apply bg-zinc-900; }
-  ::-webkit-scrollbar-thumb { @apply bg-zinc-600 rounded-full; }
+  .dot-grid {
+    background-image: radial-gradient(circle, #3f3f46 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  ::-webkit-scrollbar { width: 3px; height: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-zinc-700 rounded-full; }
 }
 
 @layer utilities {
+  .font-display { font-family: 'Syne', sans-serif; }
+  .font-mono-custom { font-family: 'DM Mono', monospace; }
+
   .streaming-cursor::after {
     content: "▋";
-    @apply animate-pulse text-emerald-400 ml-0.5;
+    @apply text-emerald-400 ml-0.5;
+    animation: blink 0.8s step-end infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+
+  .sidebar-glow {
+    box-shadow: inset -1px 0 0 0 rgba(52, 211, 153, 0.08);
+  }
+
+  .source-card {
+    @apply transition-all duration-200;
+  }
+  .source-card:hover {
+    @apply -translate-y-0.5;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+
+  .fade-in {
+    animation: fadeIn 0.3s ease forwards;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 }
