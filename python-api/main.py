@@ -1,12 +1,13 @@
 import sys
 import asyncio
+import threading
 import tempfile
 from pathlib import Path
 
 # ── Path setup MUST come before any local imports ───────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))                    # gives access to src/
-sys.path.insert(0, str(Path(__file__).resolve().parent)) # gives access to python-api/
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ── Third-party imports ──────────────────────────────────────────────────────
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -20,8 +21,7 @@ from ingest import run_ingestion
 from query import make_sse_stream
 
 # ── App setup ────────────────────────────────────────────────────────────────
-app = FastAPI(title="OmniRAG API", version="6.0")
-
+app = FastAPI(title="OmniRAG API", version="6.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:5173"],
@@ -42,6 +42,7 @@ def get_status():
         "current_file":     state["current_file"],
         "current_modality": state["current_modality"],
         "processing":       state["processing"],
+        "error":            state.get("error"),        # surface errors to frontend
     }
 
 
@@ -52,59 +53,62 @@ def delete_session():
     return {"message": "Session cleared."}
 
 
-# ── INGEST ────────────────────────────────────────────────────────────────────
-@app.post("/ingest")
+# ── background worker ─────────────────────────────────────────────────────────
+def _ingest_worker(dest: Path, modality: str, filename: str):
+    """Runs in a daemon thread — updates state directly, never touches HTTP."""
+    try:
+        docs = run_ingestion(str(dest), modality, filename)
+        state["current_file"]     = filename
+        state["current_modality"] = modality
+        state["pipeline_ready"]   = True
+        state["error"]            = None
+        print(f"[Ingest] Done — {len(docs)} chunks indexed.")
+    except Exception as exc:
+        clear_pipeline()
+        state["error"] = str(exc)
+        print(f"[Ingest] ERROR: {exc}")
+    finally:
+        state["processing"] = False
+        if dest.exists():
+            dest.unlink()
+
+
+# ── INGEST (returns 202 immediately) ─────────────────────────────────────────
+@app.post("/ingest", status_code=202)
 async def ingest_file(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
     modality = MODALITY_MAP.get(ext)
-
     if modality is None:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type '{ext}'. Supported: "
                    f"{', '.join(MODALITY_MAP.keys())}",
         )
-
     if state["processing"]:
         raise HTTPException(
             status_code=409,
             detail="Already processing a file. Wait or clear session.",
         )
 
-    # Clear previous session before starting new one
     clear_pipeline()
     state["processing"] = True
+    state["error"]      = None
 
+    # Save the upload synchronously — this is fast
     dest = UPLOAD_DIR / file.filename
-    try:
-        content = await file.read()
-        dest.write_bytes(content)
+    content = await file.read()
+    dest.write_bytes(content)
 
-        # Run blocking ingestion in thread pool so FastAPI stays responsive
-        loop = asyncio.get_event_loop()
-        docs = await loop.run_in_executor(
-            None, run_ingestion, str(dest), modality, file.filename
-        )
+    # Kick off heavy processing in a background thread
+    t = threading.Thread(target=_ingest_worker, args=(dest, modality, file.filename), daemon=True)
+    t.start()
 
-        state["current_file"]     = file.filename
-        state["current_modality"] = modality
-        state["pipeline_ready"]   = True
-
-        return {
-            "message":   f"Ingested {len(docs)} document chunks.",
-            "filename":  file.filename,
-            "modality":  modality,
-            "doc_count": len(docs),
-        }
-
-    except Exception as exc:
-        clear_pipeline()
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    finally:
-        state["processing"] = False
-        if dest.exists():
-            dest.unlink()  # clean up uploaded temp file
+    # Return immediately — frontend must poll /status
+    return {
+        "message":  "Ingestion started.",
+        "filename": file.filename,
+        "modality": modality,
+    }
 
 
 # ── QUERY (SSE streaming) ─────────────────────────────────────────────────────
@@ -122,7 +126,7 @@ async def query_sse(q: str):
         make_sse_stream(state["pipeline"], q),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control":    "no-cache",
             "X-Accel-Buffering": "no",
         },
     )
